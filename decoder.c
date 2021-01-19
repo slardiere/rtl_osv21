@@ -47,13 +47,14 @@ static long halfTime = 0;
 
 
 /*
-  decorder_callback - Function that receives the RTL-SDR buffer and performs 
+  decorder_callback - Function that receives the RTL-SDR buffer and performs
   the Manchester decoding.  ctx is a pointer to a PyList object that is updaated
   when a new bit is found.
 */
 
 static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
-	int j, power, edge, addBit;
+        uint32_t j;
+	int power, edge, addBit;
 	float real, imag, instPower;
 	PyObject *temp;
 
@@ -62,7 +63,7 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 		if( do_exit ) {
         	return;
         }
-		
+
 		// Get the current time to figure out how long we've been running
 		tNow = (int) time(NULL);
 		diff = tNow - tStart;
@@ -70,7 +71,7 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 			do_exit = 1;
 			rtlsdr_cancel_async(dev);
 		}
-		
+
 		// Process the buffer
 		for(j=0; j<len/2; j++) {
 			//// Unpack
@@ -78,22 +79,22 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 			imag = ((float) *(buf + 2*j+1)) - 127.0;
 			instPower = real*real + imag*imag;
 			dataCounter += 1;
-		
+
 			//// Moving average
 			runningSum += instPower - *(powerBuffer + (dataCounter-1) % SMOOTH_WINDOW);
 			*(powerBuffer + (dataCounter-1) % SMOOTH_WINDOW) = instPower;
-		
+
 			//// Convert to an integer
 			if( runningSum >= THRESHOLD*SMOOTH_WINDOW ) {
 				power = 1;
 			} else {
 				power = 0;
 			}
-		
+
 			//// Edge detection
 			edge = power - prevPower;
 			prevPower = power;
-		
+
 			//// Timing
 			if( edge != 0 ) {
 				if( prevEdge < 0 ) {
@@ -101,10 +102,10 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 				}
 				edgeCountDiff = dataCounter - prevEdge;
 			}
-				
+
 			if( edge == 1 ) {
 				////// Rising edge
-		
+
 				if( edgeCountDiff > 80000 ) {
 					prevEdge = dataCounter;
 					halfTime = 0;
@@ -120,16 +121,16 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 					halfTime += 2;
 					addBit = 1;
 				}
-			
+
 				if( addBit && halfTime % 2 == 0 ) {
-					temp = PyInt_FromLong(1);
+					temp = PyLong_FromLong(1);
 					PyList_Append(ctx, temp);
 					Py_DECREF(temp);
 				}
-			
+
 			} else if( edge == -1 ) {
 				////// Falling edge
-			
+
 				if( edgeCountDiff > 80000 ) {
 					prevEdge = dataCounter;
 					halfTime = 0;
@@ -145,16 +146,16 @@ static void decoder_callback(unsigned char *buf, uint32_t len, void *ctx) {
 					halfTime += 2;
 					addBit = 1;
 				}
-			
+
 				if( addBit && halfTime % 2 == 0 ) {
-					temp = PyInt_FromLong(0);
+					temp = PyLong_FromLong(0);
 					PyList_Append(ctx, temp);
 					Py_DECREF(temp);
 				}
 			}
 		}
 		// end buffer processing loop
-		
+
 	}
 }
 
@@ -233,18 +234,18 @@ static PyObject *readRTL(PyObject *self, PyObject *args) {
 	int r, i, dev_index;
 	long duration;
 	struct sigaction sigact;
-	
+
 	if( !PyArg_ParseTuple(args, "i", &duration) ) {
 		PyErr_Format(PyExc_RuntimeError, "Invalid parameters");
 		return NULL;
 	}
-	
+
 	// Validate the input
 	if( duration <= 0 ) {
 		PyErr_Format(PyExc_ValueError, "Duration value must be greater than zero");
 		return NULL;
 	}
-	
+
 	// Setup the RTL SDR device
 	dev_index = verbose_device_search("0");
 	if( dev_index < 0 ) {
@@ -266,18 +267,18 @@ static PyObject *readRTL(PyObject *self, PyObject *args) {
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGQUIT, &sigact, NULL);
 	sigaction(SIGPIPE, &sigact, NULL);
-	
+
 	// Setup the radio
 	r = rtlsdr_set_sample_rate(dev, SAMPLE_RATE);
 	r = rtlsdr_set_center_freq(dev, FREQUENCY);
 	r = rtlsdr_set_tuner_gain_mode(dev, 0);
-	
+
 	// Reset endpoint before we start reading from it (mandatory)
 	r = rtlsdr_reset_buffer(dev);
-	
+
 	// Setup the output list
 	bits = PyList_New(0);
-	
+
 	// Reset the loop control
 	runningSum = 0;
 	prevPower = 0;
@@ -285,35 +286,35 @@ static PyObject *readRTL(PyObject *self, PyObject *args) {
 	prevEdge = -1;
 	edgeCountDiff = -1;
 	halfTime = 0;
-	
+
 	// Setup the variables - Power Detection
 	powerBuffer = (float *) malloc(SMOOTH_WINDOW*sizeof(float));
 	for(i=0; i<SMOOTH_WINDOW; i++) {
 		*(powerBuffer + i) = 0.0;
 	}
-	
+
 	// Setup the raw data buffer
 	unsigned char *raw;
 	raw = (unsigned char *) malloc(RTL_BUFFER_SIZE*sizeof(unsigned char));
-	
+
 	// Read in data
 	tStart = (int) time(NULL);
 	loopTimeOut = (int) duration;
 	r = rtlsdr_read_async(dev, decoder_callback, (void *) bits, 0, RTL_BUFFER_SIZE);
-	
+
 	// Done
 	if( do_exit ) {
 		fprintf(stderr, "\nUser cancel, exiting...\n");
 	} else {
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);
 	}
-	
+
 	/*
 	If the call to rtlsdr_close() here generates a segfault then try
 	updating to a newer libusb.
 	*/
 	rtlsdr_close(dev);
-	
+
 	// Cleanup
 	free(raw);
 	free(powerBuffer);
@@ -341,7 +342,7 @@ Based on:\n\
 
 
 /*
-  readRTLFile - Function for reading from a file created by 'rtl_sdr' and 
+  readRTLFile - Function for reading from a file created by 'rtl_sdr' and
   returning a list of Manchester decoded bits.
 */
 
@@ -355,7 +356,7 @@ static PyObject *readRTLFile(PyObject *self, PyObject *args) {
 		PyErr_Format(PyExc_RuntimeError, "Invalid parameters");
 		return NULL;
 	}
-	
+
 	// Setup the signal handler	so that we can exit the callback function
 	sigact.sa_handler = sighandler;
 	sigemptyset(&sigact.sa_mask);
@@ -364,7 +365,7 @@ static PyObject *readRTLFile(PyObject *self, PyObject *args) {
 	sigaction(SIGTERM, &sigact, NULL);
 	sigaction(SIGQUIT, &sigact, NULL);
 	sigaction(SIGPIPE, &sigact, NULL);
-	
+
 	// Ready the file
 	FILE *fh = fopen(filename, "r");
 	if(fh == NULL) {
@@ -374,7 +375,7 @@ static PyObject *readRTLFile(PyObject *self, PyObject *args) {
 
 	// Setup the output list
 	bits = PyList_New(0);
-	
+
 	// Reset the loop control
 	runningSum = 0;
 	prevPower = 0;
@@ -382,29 +383,29 @@ static PyObject *readRTLFile(PyObject *self, PyObject *args) {
 	prevEdge = -1;
 	edgeCountDiff = -1;
 	halfTime = 0;
-	
+
 	// Setup the variables - Power Detection
 	powerBuffer = (float *) malloc(SMOOTH_WINDOW*sizeof(float));
 	for(i=0; i<SMOOTH_WINDOW; i++) {
 		*(powerBuffer + i) = 0.0;
 	}
-	
+
 	// Setup the raw data buffer
 	unsigned char *raw;
 	raw = (unsigned char *) malloc(RTL_BUFFER_SIZE*sizeof(unsigned char));
-	
+
 	// Reset the loop control
 	prevPower = 0;
 	dataCounter = 0;
 	prevEdge = -1;
 	edgeCountDiff = -1;
 	halfTime = 0;
-	
+
 	// Read in data and decode it
 	loopTimeOut = 0;
 	while( (i = fread(raw, sizeof(unsigned char), RTL_BUFFER_SIZE, fh)) > 0 ) {
 		decoder_callback(raw, i, (void *) bits);
-		
+
 		//// Check for a request to exit
 		if( do_exit ) {
 			break;
@@ -416,7 +417,7 @@ static PyObject *readRTLFile(PyObject *self, PyObject *args) {
 		free(raw);
 		return NULL;
 	}
-	
+
 	// Done
 	fclose(fh);
 	free(raw);
@@ -448,8 +449,8 @@ Based on:\n\
 */
 
 static PyMethodDef DecoderMethods[] = {
-	{"readRTL", (PyCFunction) readRTL, METH_VARARGS, readRTL_doc}, 
-	{"readRTLFile", (PyCFunction) readRTLFile, METH_VARARGS, readRTLFile_doc}, 
+	{"readRTL", (PyCFunction) readRTL, METH_VARARGS, readRTL_doc},
+	{"readRTLFile", (PyCFunction) readRTLFile, METH_VARARGS, readRTLFile_doc},
 	{NULL, NULL, 0, NULL}
 };
 
@@ -461,13 +462,27 @@ station data.");
 /*
   Module Setup - Initialization
 */
-
-PyMODINIT_FUNC initdecoder(void) {
+PyMODINIT_FUNC PyInit_decoder(void) {
 	PyObject *m;
 
-	// Module definitions and functions
-	m = Py_InitModule3("decoder", DecoderMethods, Decoder_doc);
-	
+        // Module definitions and functions
+        #if PY_MAJOR_VERSION >= 3
+          static struct PyModuleDef moduledef = {
+            PyModuleDef_HEAD_INIT,
+            "decoder",           /* m_name */
+            Decoder_doc,         /* m_doc */
+            -1,                  /* m_size */
+            DecoderMethods,      /* m_methods */
+            NULL,                /* m_reload */
+            NULL,                /* m_traverse */
+            NULL,                /* m_clear */
+            NULL,                /* m_free */
+          };
+          m = PyModule_Create(&moduledef);
+        #else
+          m = Py_InitModule3("decoder", DecoderMethods , Decoder_doc);
+        #endif
 	// Version and revision information
-	PyModule_AddObject(m, "__version__", PyString_FromString("0.1"));
+	PyModule_AddObject(m, "__version__", PyUnicode_FromString("0.1"));
+        return m;
 }
